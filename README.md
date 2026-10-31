@@ -77,12 +77,12 @@ ssh-keygen -t ed25519 -f ~/.ssh/raspberry_pi_ed25519 -C "mehoggan raspberry pis"
 | Host | User |
 |---|---|
 | `192.168.1.2` (Pi-hole primary) | `dudebodacious` |
-| `192.168.1.4` (Pi-hole replica) | `admin` |
+| `192.168.1.4` (Pi-hole replica) | `pi-admin` |
 | `192.168.1.6` (Grafana) | `grafana` |
 
 ```bash
 ssh-copy-id -i ~/.ssh/raspberry_pi_ed25519.pub dudebodacious@192.168.1.2
-ssh-copy-id -i ~/.ssh/raspberry_pi_ed25519.pub admin@192.168.1.4
+ssh-copy-id -i ~/.ssh/raspberry_pi_ed25519.pub pi-admin@192.168.1.4
 ssh-copy-id -i ~/.ssh/raspberry_pi_ed25519.pub grafana@192.168.1.6
 ```
 
@@ -97,7 +97,7 @@ Host pihole-primary
 
 Host pihole-replica
     HostName 192.168.1.4
-    User admin
+    User pi-admin
     IdentityFile ~/.ssh/raspberry_pi_ed25519
     IdentitiesOnly yes
 
@@ -124,7 +124,7 @@ On each Pi, check:
 sudo -n true && echo "OK: passwordless sudo"
 ```
 
-Raspberry Pi OS usually sets this up for the first user already. If the check fails, add a drop-in that only allows the commands this tool runs. Replace `dudebodacious` with **that Pi's** user (`admin` on `.4`, `grafana` on `.6`):
+Raspberry Pi OS usually sets this up for the first user already. If the check fails, add a drop-in that only allows the commands this tool runs. Replace `dudebodacious` with **that Pi's** user (`pi-admin` on `.4`, `grafana` on `.6`):
 
 ```bash
 sudo visudo -f /etc/sudoers.d/cloudflared-upgrade
