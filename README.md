@@ -42,7 +42,7 @@ flowchart TD
 |---|---|
 | Go 1.22 or newer | `cloudflared` running as a systemd service |
 | OpenSSH client (`ssh`) | SSH server, reachable on the LAN |
-| An SSH key that can log in to each Pi | `sudo` that works without a password (see 2.3) |
+| A dedicated SSH key + `~/.ssh/config` entry per Pi (see 2.2) | `sudo` that works without a password (see 2.3) |
 
 The tool uses only the Go standard library. It runs your system `ssh`, so your `~/.ssh/config`, ssh-agent and `known_hosts` all apply.
 
@@ -57,32 +57,64 @@ sudo snap install go --classic      # or: sudo apt install golang-go (check that
 go version
 ```
 
-### 2.2 Make sure key-based SSH works for every Pi
+### 2.2 Set up key-based SSH for every Pi
 
-The tool runs with `BatchMode=yes`, so it **never** asks for a password or asks you to accept a host key. Each command below must work without prompting:
+The tool runs with `BatchMode=yes`, so it **never** asks for a password or asks you to accept a host key. Password-only logins fail with `Permission denied (publickey,password)`.
+
+**a) Create a key just for the Pis** (keeps your GitHub key separate):
 
 ```bash
-ssh-copy-id dudebodacious@192.168.1.2
-ssh-copy-id dudebodacious@192.168.1.4
-ssh-copy-id dudebodacious@192.168.1.6
-
-# Accept each host key once, and check that no password prompt appears:
-for host in 192.168.1.2 192.168.1.4 192.168.1.6; do ssh -o BatchMode=yes dudebodacious@$host hostname; done
+ssh-keygen -t ed25519 -f ~/.ssh/raspberry_pi_ed25519 -C "mehoggan raspberry pis"
 ```
 
-Optional: add aliases to `~/.ssh/config` so you can pass names instead of IP addresses:
+| If you… | Passphrase |
+|---|---|
+| Will only run the tool by hand | Set one, then `ssh-add ~/.ssh/raspberry_pi_ed25519` before each session |
+| Want the weekly timer (section 6) | Leave it empty |
+
+**b) Copy it to each Pi.** Each Pi has its own login, and this asks for that Pi's password one last time:
+
+| Host | User |
+|---|---|
+| `192.168.1.2` (Pi-hole primary) | `dudebodacious` |
+| `192.168.1.4` (Pi-hole replica) | `admin` |
+| `192.168.1.6` (Grafana) | `grafana` |
+
+```bash
+ssh-copy-id -i ~/.ssh/raspberry_pi_ed25519.pub dudebodacious@192.168.1.2
+ssh-copy-id -i ~/.ssh/raspberry_pi_ed25519.pub admin@192.168.1.4
+ssh-copy-id -i ~/.ssh/raspberry_pi_ed25519.pub grafana@192.168.1.6
+```
+
+**c) Add the Pis to `~/.ssh/config`.** This step is required: it gives each host its own user and key, so the tool needs no `-user`:
 
 ```sshconfig
-Host pi1
+Host pihole-primary
     HostName 192.168.1.2
     User dudebodacious
-Host pi2
+    IdentityFile ~/.ssh/raspberry_pi_ed25519
+    IdentitiesOnly yes
+
+Host pihole-replica
     HostName 192.168.1.4
-    User dudebodacious
-Host pi3
+    User admin
+    IdentityFile ~/.ssh/raspberry_pi_ed25519
+    IdentitiesOnly yes
+
+Host grafana-pi
     HostName 192.168.1.6
-    User dudebodacious
+    User grafana
+    IdentityFile ~/.ssh/raspberry_pi_ed25519
+    IdentitiesOnly yes
 ```
+
+**d) Check.** Each line must print a hostname with no prompt:
+
+```bash
+for host in pihole-primary pihole-replica grafana-pi; do ssh -o BatchMode=yes "$host" hostname; done
+```
+
+The first time, run it **without** `-o BatchMode=yes` so you can accept each host key.
 
 ### 2.3 Let sudo run without a password
 
@@ -92,7 +124,7 @@ On each Pi, check:
 sudo -n true && echo "OK: passwordless sudo"
 ```
 
-Raspberry Pi OS usually sets this up for the first user already. If the check fails, add a drop-in that only allows the commands this tool runs:
+Raspberry Pi OS usually sets this up for the first user already. If the check fails, add a drop-in that only allows the commands this tool runs. Replace `dudebodacious` with **that Pi's** user (`admin` on `.4`, `grafana` on `.6`):
 
 ```bash
 sudo visudo -f /etc/sudoers.d/cloudflared-upgrade
@@ -154,8 +186,7 @@ Nothing to deploy to the Pis. The tool runs **on your machine** and connects to 
 ### Always start with a dry run
 
 ```bash
-./build/raspberry-pi-cloudflared-upgrade -user dudebodacious \
-  -hosts 192.168.1.4,192.168.1.6,192.168.1.2 -dry-run
+./build/raspberry-pi-cloudflared-upgrade -hosts pihole-replica,grafana-pi,pihole-primary -dry-run
 ```
 
 This connects to each host, reports the binary, version and install method, and changes nothing. It doesn't need sudo.
@@ -163,30 +194,31 @@ This connects to each host, reports the binary, version and install method, and 
 ### Then the real run
 
 ```bash
-./build/raspberry-pi-cloudflared-upgrade -user dudebodacious \
-  -hosts 192.168.1.4,192.168.1.6,192.168.1.2
+./build/raspberry-pi-cloudflared-upgrade -hosts pihole-replica,grafana-pi,pihole-primary
 ```
 
-**Put the Pi you depend on most last.** Pi #1 (`192.168.1.2`) carries `ssh.`, `ssh2.` and `pihole.silvahoggan.name`, so upgrade the others first. Connecting by LAN IP means a restart never cuts off the tool's own SSH session.
+The names come from `~/.ssh/config` (step 2.2c), which supplies each Pi's user and key.
+
+**Put the Pi you depend on most last.** `pihole-primary` (`192.168.1.2`) carries `ssh.`, `ssh2.` and `pihole.silvahoggan.name`, so upgrade the others first. Connecting by LAN IP means a restart never cuts off the tool's own SSH session.
 
 Example output:
 
 ```text
-20:52:01  [192.168.1.4] connected (hostname …)
-20:52:01  [192.168.1.4] service runs /usr/bin/cloudflared
-20:52:01  [192.168.1.4] version on disk: 2026.7.2 (need 2026.10.2 or newer)
-20:52:01  [192.168.1.4] installed as: apt package
-20:52:02  [192.168.1.4] running apt-get update
-20:52:09  [192.168.1.4] running apt-get install --only-upgrade cloudflared
-20:52:14  [192.168.1.4] version on disk now: 2026.10.7
-20:52:14  [192.168.1.4] restarting cloudflared.service (in-progress requests get up to 30 s to finish)
-20:52:20  [192.168.1.4] tunnel healthy: 4 registered connections (process 48211)
+20:52:01  [pihole-replica] connected (hostname …)
+20:52:01  [pihole-replica] service runs /usr/bin/cloudflared
+20:52:01  [pihole-replica] version on disk: 2026.7.2 (need 2026.10.2 or newer)
+20:52:01  [pihole-replica] installed as: apt package
+20:52:02  [pihole-replica] running apt-get update
+20:52:09  [pihole-replica] running apt-get install --only-upgrade cloudflared
+20:52:14  [pihole-replica] version on disk now: 2026.10.7
+20:52:14  [pihole-replica] restarting cloudflared.service (in-progress requests get up to 30 s to finish)
+20:52:20  [pihole-replica] tunnel healthy: 4 registered connections (process 48211)
 ...
 
-HOST         HOSTNAME     INSTALLED AS  BEFORE     AFTER      CONNECTIONS  RESULT
-192.168.1.4  …            apt package   2026.7.2   2026.10.7  4            upgraded
-192.168.1.6  …            apt package   2026.7.2   2026.10.7  4            upgraded
-192.168.1.2  raspberrypi  apt package   2026.10.7  2026.10.7  -            already current
+HOST            HOSTNAME     INSTALLED AS  BEFORE     AFTER      CONNECTIONS  RESULT
+pihole-replica  …            apt package   2026.7.2   2026.10.7  4            upgraded
+grafana-pi      …            apt package   2026.7.2   2026.10.7  4            upgraded
+pihole-primary  raspberrypi  apt package   2026.10.7  2026.10.7  -            already current
 ```
 
 The exit code is `0` when every host succeeded and `1` if any failed or were skipped, so it's safe to use in scripts and timers.
@@ -196,7 +228,7 @@ The exit code is `0` when every host succeeded and `1` if any failed or were ski
 | Option | Default | Meaning |
 |---|---|---|
 | `-hosts` | *(required)* | Comma-separated IP addresses or `~/.ssh/config` aliases, upgraded **in this order** |
-| `-user` | from ssh config | SSH user |
+| `-user` | from ssh config | SSH user for **all** hosts. Leave unset when the Pis have different users |
 | `-port` | from ssh config / 22 | SSH port |
 | `-minimum-version` | `2026.10.2` | A host still below this after upgrading counts as failed |
 | `-dry-run` | off | Report only; no sudo, no changes |
@@ -226,7 +258,7 @@ Description=Upgrade cloudflared on the Raspberry Pis
 
 [Service]
 Type=oneshot
-ExecStart=%h/go/bin/raspberry-pi-cloudflared-upgrade -user dudebodacious -hosts 192.168.1.4,192.168.1.6,192.168.1.2
+ExecStart=%h/go/bin/raspberry-pi-cloudflared-upgrade -hosts pihole-replica,grafana-pi,pihole-primary
 ```
 
 `~/.config/systemd/user/cloudflared-upgrade.timer`
@@ -251,7 +283,7 @@ systemctl --user list-timers cloudflared-upgrade.timer      # next run
 journalctl --user -u cloudflared-upgrade.service -n 50      # last run's output
 ```
 
-> A timer has no access to your desktop ssh-agent. Give it a key it can read: set `IdentityFile ~/.ssh/<key>` for the Pi hosts in `~/.ssh/config`, using a key that has no passphrase and is used only for the Pis.
+> A timer has no access to your desktop ssh-agent. It works only if `~/.ssh/raspberry_pi_ed25519` has **no passphrase**. The `IdentityFile` lines from step 2.2c point it at that key.
 
 ---
 
@@ -259,7 +291,8 @@ journalctl --user -u cloudflared-upgrade.service -n 50      # last run's output
 
 | Message | Fix |
 |---|---|
-| `ssh to … failed: Permission denied` / `Host key verification failed` | Redo step 2.2 for that host |
+| `Permission denied (publickey,password)` | The key isn't on that Pi, or the wrong user is set. Redo step 2.2b/c for that host |
+| `Host key verification failed` | Connect once without `BatchMode` to accept the key (step 2.2d) |
 | `sudo asks for a password on this host` | Step 2.3 |
 | `no cloudflared.service service on this host` | Nothing to upgrade there, or the unit has another name (`-service`) |
 | `apt only offered …; installing the latest .deb from GitHub` | Normal on a Debian release the Cloudflare repo doesn't list. To make apt work, set the suite to `any` in `/etc/apt/sources.list.d/cloudflared.list` |
